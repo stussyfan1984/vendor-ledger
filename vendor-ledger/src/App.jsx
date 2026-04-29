@@ -1,13 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbywpj522GgduRbcprGQ0mHNTVkEmQi_uoCaBgXUS5GlvGHQsGHLHLTNTET-WojzcYEhOw/exec";
-const SHEET_NAME = "貨款帳本";
 const STORAGE_KEY = "vendor_ledger_records";
 
 const VENDORS = ["鼎耀","7-Eleven","全聯","瓦斯","垃圾清運","樂清","開元","薪資","萊爾富","雞蛋","得意百貨","其他"];
 
 const fmt = (n) => new Intl.NumberFormat("zh-TW", { style: "currency", currency: "TWD", minimumFractionDigits: 0 }).format(n);
-
 const today = () => new Date().toISOString().slice(0, 10);
 
 const syncRecord = async (record) => {
@@ -35,7 +33,7 @@ export default function App() {
   const [filterVendor, setFilterVendor] = useState("全部");
   const [filterDate, setFilterDate] = useState("");
   const [syncStatus, setSyncStatus] = useState("");
-  const [form, setForm] = useState({ date: today(), vendor: "鼎耀", content: "", type: "out", amount: "", paid: false });
+  const [form, setForm] = useState({ date: today(), vendor: "鼎耀", content: "", type: "out", amount: "", receipt: false });
   const amountRef = useRef(null);
 
   useEffect(() => {
@@ -55,36 +53,33 @@ export default function App() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(recs)); } catch (_) {}
   }, []);
 
-  // Compute running balance
   const withBalance = (recs) => {
     let bal = 0;
     return recs.map(r => {
-      if (r.type === "in") bal += r.amount;
-      else if (r.type === "out") bal -= r.amount;
-      else if (r.type === "paid") bal += r.amount;
+      bal += r.type === "in" ? r.amount : -r.amount;
       return { ...r, balance: bal };
     });
   };
 
-  const sortedRecords = [...records].sort((a, b) => new Date(a.date) - new Date(b.date) || a.id - b.id);
-  const recordsWithBal = withBalance(sortedRecords);
+  const sorted = [...records].sort((a, b) => new Date(a.date) - new Date(b.date) || a.id - b.id);
+  const withBal = withBalance(sorted);
 
-  const filtered = recordsWithBal.filter(r => {
+  const filtered = withBal.filter(r => {
     if (filterVendor !== "全部" && r.vendor !== filterVendor) return false;
     if (filterDate && r.date !== filterDate) return false;
     return true;
   });
 
-  const currentBalance = recordsWithBal.length > 0 ? recordsWithBal[recordsWithBal.length - 1].balance : 0;
+  const currentBalance = withBal.length > 0 ? withBal[withBal.length - 1].balance : 0;
   const totalOut = records.filter(r => r.type === "out").reduce((a, r) => a + r.amount, 0);
-  const totalIn = records.filter(r => r.type === "in" || r.type === "paid").reduce((a, r) => a + r.amount, 0);
+  const totalIn = records.filter(r => r.type === "in").reduce((a, r) => a + r.amount, 0);
 
   const openForm = (rec = null) => {
     if (rec) {
-      setForm({ date: rec.date, vendor: rec.vendor, content: rec.content, type: rec.type, amount: String(rec.amount), paid: rec.paid });
+      setForm({ date: rec.date, vendor: rec.vendor, content: rec.content, type: rec.type, amount: String(rec.amount), receipt: rec.receipt || false });
       setEditId(rec.id);
     } else {
-      setForm({ date: today(), vendor: "鼎耀", content: "", type: "out", amount: "", paid: false });
+      setForm({ date: today(), vendor: "鼎耀", content: "", type: "out", amount: "", receipt: false });
       setEditId(null);
     }
     setShowForm(true);
@@ -94,13 +89,8 @@ export default function App() {
   const submit = async () => {
     const amt = parseInt(form.amount.replace(/[^0-9]/g, ""), 10);
     if (!amt || isNaN(amt) || !form.content.trim()) return;
-    const rec = { id: editId || Date.now(), date: form.date, vendor: form.vendor, content: form.content.trim(), type: form.type, amount: amt, paid: form.paid, time: new Date().toISOString() };
-    let updated;
-    if (editId) {
-      updated = records.map(r => r.id === editId ? rec : r);
-    } else {
-      updated = [...records, rec];
-    }
+    const rec = { id: editId || Date.now(), date: form.date, vendor: form.vendor, content: form.content.trim(), type: form.type, amount: amt, receipt: form.receipt, time: new Date().toISOString() };
+    const updated = editId ? records.map(r => r.id === editId ? rec : r) : [...records, rec];
     setRecords(updated);
     saveLocal(updated);
     setShowForm(false);
@@ -111,14 +101,6 @@ export default function App() {
     setTimeout(() => setSyncStatus(""), 3000);
   };
 
-  const togglePaid = async (id) => {
-    const updated = records.map(r => r.id === id ? { ...r, paid: !r.paid } : r);
-    setRecords(updated);
-    saveLocal(updated);
-    const rec = updated.find(r => r.id === id);
-    syncRecord(rec);
-  };
-
   const deleteRecord = (id) => {
     if (!confirm("確定刪除這筆記錄？")) return;
     const updated = records.filter(r => r.id !== id);
@@ -127,18 +109,13 @@ export default function App() {
   };
 
   const exportCSV = () => {
-    const rows = [["日期","廠商","內容","類型","金額","已付","餘額"]];
-    recordsWithBal.forEach(r => {
-      rows.push([r.date, r.vendor, r.content, r.type==="in"?"收入":r.type==="paid"?"付款":"支出", r.amount, r.paid?"✓":"", r.balance]);
-    });
+    const rows = [["日期","廠商","內容","類型","金額","剩餘貨款","收據/發票"]];
+    withBal.forEach(r => rows.push([r.date, r.vendor, r.content, r.type==="in"?"收入":"支出", r.type==="in"?r.amount:-r.amount, r.balance, r.receipt?"✓":""]));
     const csv = "\uFEFF" + rows.map(r => r.join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = `vendor-ledger-${today()}.csv`; a.click(); URL.revokeObjectURL(url);
   };
-
-  const typeLabel = (t) => t === "in" ? "收入" : t === "paid" ? "已付款" : "支出";
-  const typeColor = (t) => t === "in" ? "#3dff7e" : t === "paid" ? "#60a5fa" : "#ff6b6b";
 
   if (!loaded) return (
     <div style={{ background:"#0f0f0f", height:"100vh", display:"flex", alignItems:"center", justifyContent:"center", color:"#3dff7e", fontFamily:"monospace", fontSize:14 }}>
@@ -155,7 +132,6 @@ export default function App() {
         button { cursor: pointer; font-family: 'Courier New', monospace; transition: all .15s; }
         button:active { transform: scale(.96); }
         tr:hover td { background: #161616; }
-        .paid-row td { opacity: 0.5; }
       `}</style>
 
       {/* Header */}
@@ -169,18 +145,18 @@ export default function App() {
             </span>}
           </div>
         </div>
-        <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+        <div style={{ display:"flex", gap:10 }}>
           <button onClick={exportCSV} style={{ background:"transparent", border:"1.5px solid #333", color:"#666", padding:"7px 14px", borderRadius:4, fontSize:12 }}>匯出 CSV</button>
           <button onClick={() => openForm()} style={{ background:"#3dff7e", border:"none", color:"#0f0f0f", padding:"8px 20px", borderRadius:4, fontSize:13, fontWeight:700 }}>+ 新增記錄</button>
         </div>
       </div>
 
-      {/* Stats bar */}
-      <div style={{ display:"flex", gap:0, borderBottom:"1px solid #1a1a1a" }}>
+      {/* Stats */}
+      <div style={{ display:"flex", borderBottom:"1px solid #1a1a1a" }}>
         {[
-          { label:"當前餘額", value: fmt(currentBalance), color: currentBalance >= 0 ? "#e8e8e8" : "#ff6b6b" },
+          { label:"剩餘貨款", value: fmt(currentBalance), color: currentBalance >= 0 ? "#e8e8e8" : "#ff6b6b" },
           { label:"總支出", value: fmt(totalOut), color:"#ff6b6b" },
-          { label:"總收入/已付", value: fmt(totalIn), color:"#3dff7e" },
+          { label:"總收入", value: fmt(totalIn), color:"#3dff7e" },
           { label:"筆數", value: `${records.length} 筆`, color:"#888" },
         ].map((s, i) => (
           <div key={i} style={{ flex:1, padding:"14px 24px", borderRight:"1px solid #1a1a1a" }}>
@@ -209,37 +185,30 @@ export default function App() {
         <table style={{ width:"100%", borderCollapse:"collapse", marginTop:8 }}>
           <thead>
             <tr style={{ borderBottom:"2px solid #222" }}>
-              {["日期","廠商","內容","類型","金額","付款","餘額","操作"].map(h => (
+              {["日期","廠商","內容","類型","金額","收據","剩餘貨款","操作"].map(h => (
                 <th key={h} style={{ padding:"10px 12px", textAlign:"left", fontSize:10, color:"#555", letterSpacing:2, fontWeight:700, whiteSpace:"nowrap" }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={8} style={{ padding:"40px", textAlign:"center", color:"#333", fontSize:13 }}>尚無記錄</td></tr>
+              <tr><td colSpan={7} style={{ padding:"40px", textAlign:"center", color:"#333", fontSize:13 }}>尚無記錄</td></tr>
             )}
             {filtered.map((r) => (
-              <tr key={r.id} className={r.paid ? "paid-row" : ""} style={{ borderBottom:"1px solid #181818" }}>
+              <tr key={r.id} style={{ borderBottom:"1px solid #181818" }}>
                 <td style={{ padding:"10px 12px", fontSize:13, color:"#888", whiteSpace:"nowrap" }}>{r.date}</td>
                 <td style={{ padding:"10px 12px", fontSize:13, fontWeight:600, whiteSpace:"nowrap" }}>{r.vendor}</td>
-                <td style={{ padding:"10px 12px", fontSize:13, maxWidth:280 }}>{r.content}</td>
+                <td style={{ padding:"10px 12px", fontSize:13, maxWidth:300 }}>{r.content}</td>
                 <td style={{ padding:"10px 12px" }}>
-                  <span style={{ fontSize:11, padding:"3px 8px", borderRadius:20, background: r.type==="in"?"#0a2a15":r.type==="paid"?"#0a1a2a":"#2a0a0a", color:typeColor(r.type), fontWeight:700 }}>
-                    {typeLabel(r.type)}
+                  <span style={{ fontSize:11, padding:"3px 8px", borderRadius:20, background: r.type==="in"?"#0a2a15":"#2a0a0a", color: r.type==="in"?"#3dff7e":"#ff6b6b", fontWeight:700 }}>
+                    {r.type==="in" ? "收入" : "支出"}
                   </span>
                 </td>
-                <td style={{ padding:"10px 12px", fontSize:14, fontWeight:700, color:typeColor(r.type), whiteSpace:"nowrap" }}>
-                  {r.type==="in"||r.type==="paid" ? "+" : "-"}{fmt(r.amount)}
+                <td style={{ padding:"10px 12px", fontSize:14, fontWeight:700, color: r.type==="in"?"#3dff7e":"#ff6b6b", whiteSpace:"nowrap" }}>
+                  {r.type==="in" ? "+" : "-"}{fmt(r.amount)}
                 </td>
-                <td style={{ padding:"10px 12px" }}>
-                  {r.type === "out" && (
-                    <button onClick={() => togglePaid(r.id)} style={{
-                      background: r.paid ? "#0a2a15" : "transparent",
-                      border: `1.5px solid ${r.paid ? "#3dff7e" : "#333"}`,
-                      color: r.paid ? "#3dff7e" : "#555",
-                      padding:"4px 12px", borderRadius:4, fontSize:12, fontWeight:700,
-                    }}>{r.paid ? "✓ 已付" : "標記付款"}</button>
-                  )}
+                <td style={{ padding:"10px 12px", textAlign:"center" }}>
+                  <span style={{ fontSize:14, color: r.receipt ? "#3dff7e" : "#333" }}>{r.receipt ? "✓" : "—"}</span>
                 </td>
                 <td style={{ padding:"10px 12px", fontSize:14, fontWeight:700, color: r.balance < 0 ? "#ff6b6b" : "#e8e8e8", whiteSpace:"nowrap" }}>
                   {fmt(r.balance)}
@@ -254,11 +223,11 @@ export default function App() {
         </table>
       </div>
 
-      {/* Modal Form */}
+      {/* Modal */}
       {showForm && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.7)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100 }}
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.75)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100 }}
           onClick={e => { if(e.target===e.currentTarget) setShowForm(false); }}>
-          <div style={{ background:"#141414", border:"1px solid #2a2a2a", borderRadius:10, padding:"28px 32px", width:480, maxWidth:"90vw" }}>
+          <div style={{ background:"#141414", border:"1px solid #2a2a2a", borderRadius:10, padding:"28px 32px", width:460, maxWidth:"90vw" }}>
             <div style={{ fontSize:14, fontWeight:700, marginBottom:20, letterSpacing:1 }}>{editId ? "編輯記錄" : "新增記錄"}</div>
 
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
@@ -276,17 +245,22 @@ export default function App() {
 
             <div style={{ marginTop:14 }}>
               <div style={{ fontSize:10, color:"#555", letterSpacing:2, marginBottom:5 }}>內容</div>
-              <input value={form.content} onChange={e=>setForm(f=>({...f,content:e.target.value}))} placeholder="例：啤酒x24、本月薪資、瓦斯補充..." style={{ width:"100%" }} onKeyDown={e=>e.key==="Enter"&&amountRef.current?.focus()} />
+              <input value={form.content} onChange={e=>setForm(f=>({...f,content:e.target.value}))} placeholder="例：啤酒 x24、本月薪資、瓦斯補充..." style={{ width:"100%" }} onKeyDown={e=>e.key==="Enter"&&amountRef.current?.focus()} />
             </div>
 
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginTop:14 }}>
               <div>
                 <div style={{ fontSize:10, color:"#555", letterSpacing:2, marginBottom:5 }}>類型</div>
-                <select value={form.type} onChange={e=>setForm(f=>({...f,type:e.target.value}))} style={{ width:"100%" }}>
-                  <option value="out">支出（貨款/費用）</option>
-                  <option value="in">收入（現金補充）</option>
-                  <option value="paid">付款（已付清）</option>
-                </select>
+                <div style={{ display:"flex", gap:8 }}>
+                  {[{v:"out",label:"支出",color:"#ff6b6b"},{v:"in",label:"收入",color:"#3dff7e"}].map(t => (
+                    <button key={t.v} onClick={() => setForm(f=>({...f,type:t.v}))} style={{
+                      flex:1, padding:"9px 0", borderRadius:6, fontWeight:700, fontSize:13,
+                      border: `2px solid ${form.type===t.v ? t.color : "#2a2a2a"}`,
+                      background: form.type===t.v ? (t.v==="out"?"#2a0a0a":"#0a2a15") : "transparent",
+                      color: form.type===t.v ? t.color : "#555",
+                    }}>{t.label}</button>
+                  ))}
+                </div>
               </div>
               <div>
                 <div style={{ fontSize:10, color:"#555", letterSpacing:2, marginBottom:5 }}>金額</div>
@@ -294,20 +268,20 @@ export default function App() {
               </div>
             </div>
 
-            {form.type === "out" && (
-              <div style={{ marginTop:14, display:"flex", alignItems:"center", gap:10 }}>
-                <input type="checkbox" id="paid-cb" checked={form.paid} onChange={e=>setForm(f=>({...f,paid:e.target.checked}))} style={{ width:16, height:16 }} />
-                <label htmlFor="paid-cb" style={{ fontSize:13, color:"#888", cursor:"pointer" }}>已付款（標記為已付）</label>
+            <div style={{ display:"flex", gap:10, marginTop:22, justifyContent:"space-between", alignItems:"center" }}>
+              <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer" }}>
+                <input type="checkbox" checked={form.receipt} onChange={e=>setForm(f=>({...f,receipt:e.target.checked}))}
+                  style={{ width:16, height:16, accentColor:"#3dff7e" }} />
+                <span style={{ fontSize:13, color: form.receipt ? "#3dff7e" : "#666" }}>有收據 / 發票</span>
+              </label>
+              <div style={{ display:"flex", gap:10 }}>
+                <button onClick={() => setShowForm(false)} style={{ background:"transparent", border:"1.5px solid #333", color:"#666", padding:"9px 20px", borderRadius:6, fontSize:13 }}>取消</button>
+                <button onClick={submit} disabled={!form.amount || !form.content.trim()} style={{
+                  background: (form.amount && form.content.trim()) ? (form.type==="in"?"#3dff7e":"#ff6b6b") : "#1a1a1a",
+                  border:"none", color: (form.amount && form.content.trim()) ? "#0f0f0f" : "#333",
+                  padding:"9px 24px", borderRadius:6, fontSize:13, fontWeight:700,
+                }}>{editId ? "儲存" : "新增"}</button>
               </div>
-            )}
-
-            <div style={{ display:"flex", gap:10, marginTop:22, justifyContent:"flex-end" }}>
-              <button onClick={() => setShowForm(false)} style={{ background:"transparent", border:"1.5px solid #333", color:"#666", padding:"9px 20px", borderRadius:6, fontSize:13 }}>取消</button>
-              <button onClick={submit} disabled={!form.amount || !form.content.trim()} style={{
-                background: (form.amount && form.content.trim()) ? "#3dff7e" : "#1a1a1a",
-                border:"none", color: (form.amount && form.content.trim()) ? "#0f0f0f" : "#333",
-                padding:"9px 24px", borderRadius:6, fontSize:13, fontWeight:700,
-              }}>{editId ? "儲存" : "新增"}</button>
             </div>
           </div>
         </div>
