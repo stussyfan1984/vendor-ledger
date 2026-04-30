@@ -39,7 +39,7 @@ const inputStyle = { background:"#1a1a1a", border:"1.5px solid #2a2a2a", color:"
 
 const emptyRevForm = (vendorBalance = 0) => ({
   date: today(),
-  ccExpected: "", ccActual: "",
+  ccExpected: "", ccActual: "", deliveryRevenue: "",
   cashExpected: "", cashActual: "",
   note: "",
   expectedVendorBalance: vendorBalance,
@@ -112,15 +112,18 @@ export default function App() {
   const withBal = withBalance(sorted);
   const filtered = withBal.filter(r => (filterVendor==="全部"||r.vendor===filterVendor) && (!filterDate||r.date===filterDate));
   const currentBalance = withBal.length>0 ? withBal[withBal.length-1].balance : 0;
-  const totalOut = records.filter(r=>r.type==="out").reduce((a,r)=>a+r.amount,0);
-  const totalIn = records.filter(r=>r.type==="in").reduce((a,r)=>a+r.amount,0);
+  const thisMonth = today().slice(0,7); // YYYY-MM
+  const monthRecords = records.filter(r=>r.date.slice(0,7)===thisMonth);
+  const totalOut = monthRecords.filter(r=>r.type==="out").reduce((a,r)=>a+r.amount,0);
+  const totalIn = monthRecords.filter(r=>r.type==="in").reduce((a,r)=>a+r.amount,0);
 
   // ── Revenue computed ──
   const calcRev = (r) => {
-    const cc = Number(r.ccActual||0) - Number(r.ccExpected||0);
+    const delivery = Number(r.deliveryRevenue||0);
+    const cc = (Number(r.ccActual||0) + delivery) - Number(r.ccExpected||0);
     const cash = Number(r.cashActual||0) - Number(r.cashExpected||0);
     const dailyExpected = Number(r.ccExpected||0) + Number(r.cashExpected||0);
-    const rev = Number(r.ccActual||0) + Number(r.cashActual||0);
+    const rev = Number(r.ccActual||0) + delivery + Number(r.cashActual||0);
     const diff = cc + cash;
     return { ccDiff:cc, cashDiff:cash, dailyExpected, dailyRevenue:rev, dailyDiff:diff };
   };
@@ -168,11 +171,11 @@ export default function App() {
 
   // ── Revenue actions ──
   const submitRevAdd = async () => {
-    const { date, ccExpected, ccActual, cashExpected, cashActual, note, expectedVendorBalance, vendorBalanceMatch, actualVendorBalance } = revForm;
+    const { date, ccExpected, ccActual, deliveryRevenue, cashExpected, cashActual, note, expectedVendorBalance, vendorBalanceMatch, actualVendorBalance } = revForm;
     if (!date||!ccExpected||!ccActual||!cashExpected||!cashActual) return;
     if (revenues.find(r=>r.date===date)) { alert(`${date} 已有記錄，請使用編輯功能修改`); return; }
     const actualVB = vendorBalanceMatch ? expectedVendorBalance : Number(actualVendorBalance);
-    const rec = { id:Date.now(), date, ccExpected:Number(ccExpected), ccActual:Number(ccActual), cashExpected:Number(cashExpected), cashActual:Number(cashActual), note:note||"", expectedVendorBalance:Number(expectedVendorBalance), vendorBalanceMatch, actualVendorBalance:actualVB, time:new Date().toISOString() };
+    const rec = { id:Date.now(), date, ccExpected:Number(ccExpected), ccActual:Number(ccActual), deliveryRevenue:Number(deliveryRevenue||0), cashExpected:Number(cashExpected), cashActual:Number(cashActual), note:note||"", expectedVendorBalance:Number(expectedVendorBalance), vendorBalanceMatch, actualVendorBalance:actualVB, time:new Date().toISOString() };
     const updated = [...revenues, rec]; setRevenues(updated); saveRevLocal(updated);
     setShowRevAdd(false); setRevForm(emptyRevForm());
     setRevSyncStatus("syncing");
@@ -189,6 +192,7 @@ export default function App() {
       date: revAuthRecord.date,
       ccExpected: String(revAuthRecord.ccExpected),
       ccActual: String(revAuthRecord.ccActual),
+      deliveryRevenue: String(revAuthRecord.deliveryRevenue||0),
       cashExpected: String(revAuthRecord.cashExpected),
       cashActual: String(revAuthRecord.cashActual),
       note: revAuthRecord.note || "",
@@ -199,11 +203,11 @@ export default function App() {
     setShowRevAuth(false); setShowRevEdit(true);
   };
   const submitRevEdit = async () => {
-    const { date, ccExpected, ccActual, cashExpected, cashActual, note, expectedVendorBalance, vendorBalanceMatch, actualVendorBalance } = revEditForm;
+    const { date, ccExpected, ccActual, deliveryRevenue, cashExpected, cashActual, note, expectedVendorBalance, vendorBalanceMatch, actualVendorBalance } = revEditForm;
     if (!date||!ccExpected||!ccActual||!cashExpected||!cashActual) return;
     const original = revenues.find(r=>r.id===revEditId);
     const actualVB = vendorBalanceMatch ? Number(expectedVendorBalance) : Number(actualVendorBalance);
-    const updated_rec = { ...original, date, ccExpected:Number(ccExpected), ccActual:Number(ccActual), cashExpected:Number(cashExpected), cashActual:Number(cashActual), note:note||"", expectedVendorBalance:Number(expectedVendorBalance), vendorBalanceMatch, actualVendorBalance:actualVB };
+    const updated_rec = { ...original, date, ccExpected:Number(ccExpected), ccActual:Number(ccActual), deliveryRevenue:Number(deliveryRevenue||0), cashExpected:Number(cashExpected), cashActual:Number(cashActual), note:note||"", expectedVendorBalance:Number(expectedVendorBalance), vendorBalanceMatch, actualVendorBalance:actualVB };
     const updated = revenues.map(r=>r.id===revEditId?updated_rec:r);
     setRevenues(updated); saveRevLocal(updated); setShowRevEdit(false);
     setRevSyncStatus("syncing");
@@ -217,8 +221,8 @@ export default function App() {
     const updated = revenues.filter(r=>r.id!==id); setRevenues(updated); saveRevLocal(updated);
   };
   const exportRevCSV = () => {
-    const rows = [["日期","信用卡應收","信用卡實收","信用卡差額","現金應收","現金實收","現金差額","當日應收營收","當日實際營收","當日差額","應剩餘貨款","實際剩餘貨款","與貨款相符","備註"]];
-    sortedRevs.forEach(r=>{ const c=calcRev(r); rows.push([r.date,r.ccExpected,r.ccActual,c.ccDiff,r.cashExpected,r.cashActual,c.cashDiff,c.dailyExpected,c.dailyRevenue,c.dailyDiff,r.expectedVendorBalance??"",(r.actualVendorBalance??""),r.vendorBalanceMatch?"✓":"",r.note||""]); });
+    const rows = [["日期","信用卡應收","信用卡實收","外送營收","信用卡差額","現金應收","現金實收","現金差額","當日應收營收","當日實際營收","當日差額","應剩餘貨款","實際剩餘貨款","與貨款相符","備註"]];
+    sortedRevs.forEach(r=>{ const c=calcRev(r); rows.push([r.date,r.ccExpected,r.ccActual,r.deliveryRevenue||0,c.ccDiff,r.cashExpected,r.cashActual,c.cashDiff,c.dailyExpected,c.dailyRevenue,c.dailyDiff,r.expectedVendorBalance??"",(r.actualVendorBalance??""),r.vendorBalanceMatch?"✓":"",r.note||""]); });
     const csv="\uFEFF"+rows.map(r=>r.join(",")).join("\n");
     const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"}); const url=URL.createObjectURL(blob);
     const a=document.createElement("a"); a.href=url; a.download=`revenue-${today()}.csv`; a.click(); URL.revokeObjectURL(url);
@@ -278,7 +282,7 @@ export default function App() {
       {/* ══ LEDGER TAB ══ */}
       {mainTab==="ledger" && <>
         <div style={{display:"flex",borderBottom:"1px solid #1a1a1a"}}>
-          {[{label:"剩餘貨款",value:fmt(currentBalance),color:currentBalance>=0?"#e8e8e8":"#ff6b6b"},{label:"總支出",value:fmt(totalOut),color:"#ff6b6b"},{label:"總收入",value:fmt(totalIn),color:"#3dff7e"},{label:"筆數",value:`${records.length} 筆`,color:"#888"}].map((s,i)=>(
+          {[{label:"剩餘貨款",value:fmt(currentBalance),color:currentBalance>=0?"#e8e8e8":"#ff6b6b"},{label:"本月支出",value:fmt(totalOut),color:"#ff6b6b"},{label:"本月收入",value:fmt(totalIn),color:"#3dff7e"},{label:"筆數",value:`${records.length} 筆`,color:"#888"}].map((s,i)=>(
             <div key={i} style={{flex:1,padding:"14px 24px",borderRight:"1px solid #1a1a1a"}}>
               <div style={{fontSize:10,color:"#555",letterSpacing:2,marginBottom:4}}>{s.label}</div>
               <div style={{fontSize:22,fontWeight:700,color:s.color}}>{s.value}</div>
@@ -330,12 +334,13 @@ export default function App() {
       {mainTab==="revenue" && <>
         {/* Revenue stats */}
         {(() => {
-          const totalExpected = revenues.reduce((a,r)=>a+calcRev(r).dailyExpected,0);
-          const totalRevenue = revenues.reduce((a,r)=>a+calcRev(r).dailyRevenue,0);
-          const totalDiff = revenues.reduce((a,r)=>a+calcRev(r).dailyDiff,0);
+          const monthRevs = revenues.filter(r=>r.date.slice(0,7)===thisMonth);
+          const totalExpected = monthRevs.reduce((a,r)=>a+calcRev(r).dailyExpected,0);
+          const totalRevenue = monthRevs.reduce((a,r)=>a+calcRev(r).dailyRevenue,0);
+          const totalDiff = monthRevs.reduce((a,r)=>a+calcRev(r).dailyDiff,0);
           return (
             <div style={{display:"flex",borderBottom:"1px solid #1a1a1a"}}>
-              {[{label:"應收總營收",value:fmt(totalExpected),color:"#888"},{label:"實際總營收",value:fmt(totalRevenue),color:"#f5c542"},{label:"累計差額",value:fmtDiff(totalDiff),color:diffColor(totalDiff)},{label:"記錄天數",value:`${revenues.length} 天`,color:"#888"}].map((s,i)=>(
+              {[{label:"本月應收營收",value:fmt(totalExpected),color:"#888"},{label:"本月實際營收",value:fmt(totalRevenue),color:"#f5c542"},{label:"本月差額",value:fmtDiff(totalDiff),color:diffColor(totalDiff)},{label:"記錄天數",value:`${revenues.length} 天`,color:"#888"}].map((s,i)=>(
                 <div key={i} style={{flex:1,padding:"14px 24px",borderRight:"1px solid #1a1a1a"}}>
                   <div style={{fontSize:10,color:"#555",letterSpacing:2,marginBottom:4}}>{s.label}</div>
                   <div style={{fontSize:22,fontWeight:700,color:s.color}}>{s.value}</div>
@@ -357,12 +362,12 @@ export default function App() {
         <div style={{padding:"0 28px 40px",overflowX:"auto"}}>
           <table style={{width:"100%",borderCollapse:"collapse",marginTop:8}}>
             <thead><tr style={{borderBottom:"2px solid #222"}}>
-              {["日期","信用卡應收","信用卡實收","信用卡差額","現金應收","現金實收","現金差額","當日應收營收","當日實際營收","當日差額","應剩餘貨款","實際剩餘貨款","備註","操作"].map(h=>(
+              {["日期","信用卡應收","信用卡實收","外送營收","信用卡差額","現金應收","現金實收","現金差額","當日應收營收","當日實際營收","當日差額","應剩餘貨款","實際剩餘貨款","備註","操作"].map(h=>(
                 <th key={h} style={{padding:"10px 10px",textAlign:"right",fontSize:10,color:"#555",letterSpacing:1,fontWeight:700,whiteSpace:"nowrap"}}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
-              {filteredRevs.length===0&&<tr><td colSpan={14} style={{padding:"40px",textAlign:"center",color:"#333",fontSize:13}}>尚無記錄</td></tr>}
+              {filteredRevs.length===0&&<tr><td colSpan={15} style={{padding:"40px",textAlign:"center",color:"#333",fontSize:13}}>尚無記錄</td></tr>}
               {filteredRevs.map(r=>{
                 const c = calcRev(r);
                 return (
@@ -370,6 +375,7 @@ export default function App() {
                     <td style={{padding:"10px 10px",fontSize:13,color:"#888",whiteSpace:"nowrap",textAlign:"right"}}>{r.date}</td>
                     <td style={{padding:"10px 10px",fontSize:13,textAlign:"right"}}>{fmt(r.ccExpected)}</td>
                     <td style={{padding:"10px 10px",fontSize:13,textAlign:"right",color:"#e8e8e8",fontWeight:600}}>{fmt(r.ccActual)}</td>
+                    <td style={{padding:"10px 10px",fontSize:13,textAlign:"right",color:"#60a5fa",fontWeight:600,whiteSpace:"nowrap"}}>{r.deliveryRevenue?fmt(r.deliveryRevenue):"—"}</td>
                     <td style={{padding:"10px 10px",fontSize:13,textAlign:"right",fontWeight:700,color:diffColor(c.ccDiff)}}>{fmtDiff(c.ccDiff)}</td>
                     <td style={{padding:"10px 10px",fontSize:13,textAlign:"right"}}>{fmt(r.cashExpected)}</td>
                     <td style={{padding:"10px 10px",fontSize:13,textAlign:"right",color:"#e8e8e8",fontWeight:600}}>{fmt(r.cashActual)}</td>
@@ -497,7 +503,7 @@ export default function App() {
               <div style={{fontSize:10,color:"#555",letterSpacing:2,marginBottom:5}}>日期</div>
               <input type="date" value={revForm.date} onChange={e=>setRevForm(f=>({...f,date:e.target.value}))} style={{...inputStyle,width:180,colorScheme:"dark"}} />
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:14}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:12,marginBottom:14}}>
               <div>
                 <div style={{fontSize:10,color:"#555",letterSpacing:1,marginBottom:5}}>信用卡應收</div>
                 <input type="number" value={revForm.ccExpected} onChange={e=>setRevForm(f=>({...f,ccExpected:e.target.value}))} placeholder="0" style={inputStyle} />
@@ -507,9 +513,13 @@ export default function App() {
                 <input type="number" value={revForm.ccActual} onChange={e=>setRevForm(f=>({...f,ccActual:e.target.value}))} placeholder="0" style={inputStyle} />
               </div>
               <div>
+                <div style={{fontSize:10,color:"#60a5fa",letterSpacing:1,marginBottom:5}}>外送營收</div>
+                <input type="number" value={revForm.deliveryRevenue} onChange={e=>setRevForm(f=>({...f,deliveryRevenue:e.target.value}))} placeholder="0（可留空）" style={{...inputStyle,borderColor:"#1a3a5a"}} />
+              </div>
+              <div>
                 <div style={{fontSize:10,color:"#888",letterSpacing:1,marginBottom:5}}>信用卡差額（自動）</div>
-                <div style={{...inputStyle,background:"#111",border:"1.5px solid #1a1a1a",color:diffColor(Number(revForm.ccActual||0)-Number(revForm.ccExpected||0)),fontWeight:700}}>
-                  {revForm.ccActual&&revForm.ccExpected ? fmtDiff(Number(revForm.ccActual)-Number(revForm.ccExpected)) : "—"}
+                <div style={{...inputStyle,background:"#111",border:"1.5px solid #1a1a1a",color:diffColor((Number(revForm.ccActual||0)+Number(revForm.deliveryRevenue||0))-Number(revForm.ccExpected||0)),fontWeight:700}}>
+                  {(revForm.ccActual||revForm.deliveryRevenue)&&revForm.ccExpected ? fmtDiff((Number(revForm.ccActual||0)+Number(revForm.deliveryRevenue||0))-Number(revForm.ccExpected||0)) : "—"}
                 </div>
               </div>
             </div>
@@ -539,13 +549,13 @@ export default function App() {
               <div>
                 <div style={{fontSize:10,color:"#888",letterSpacing:1,marginBottom:4}}>當日實際營收（自動）</div>
                 <div style={{fontSize:16,fontWeight:700,color:"#f5c542"}}>
-                  {(revForm.ccActual&&revForm.cashActual) ? fmt(Number(revForm.ccActual)+Number(revForm.cashActual)) : "—"}
+                  {(revForm.ccActual&&revForm.cashActual) ? fmt(Number(revForm.ccActual)+Number(revForm.deliveryRevenue||0)+Number(revForm.cashActual)) : "—"}
                 </div>
               </div>
               <div>
                 <div style={{fontSize:10,color:"#888",letterSpacing:1,marginBottom:4}}>當日差額（自動）</div>
-                <div style={{fontSize:16,fontWeight:700,color:diffColor((Number(revForm.ccActual||0)-Number(revForm.ccExpected||0))+(Number(revForm.cashActual||0)-Number(revForm.cashExpected||0)))}}>
-                  {(revForm.ccActual&&revForm.ccExpected&&revForm.cashActual&&revForm.cashExpected) ? fmtDiff((Number(revForm.ccActual)-Number(revForm.ccExpected))+(Number(revForm.cashActual)-Number(revForm.cashExpected))) : "—"}
+                <div style={{fontSize:16,fontWeight:700,color:diffColor(((Number(revForm.ccActual||0)+Number(revForm.deliveryRevenue||0))-Number(revForm.ccExpected||0))+(Number(revForm.cashActual||0)-Number(revForm.cashExpected||0)))}}>
+                  {(revForm.ccActual&&revForm.ccExpected&&revForm.cashActual&&revForm.cashExpected) ? fmtDiff(((Number(revForm.ccActual||0)+Number(revForm.deliveryRevenue||0))-Number(revForm.ccExpected||0))+(Number(revForm.cashActual||0)-Number(revForm.cashExpected||0))) : "—"}
                 </div>
               </div>
             </div>
@@ -619,10 +629,11 @@ export default function App() {
               <div style={{fontSize:10,color:"#555",letterSpacing:2,marginBottom:5}}>日期</div>
               <input type="date" value={revEditForm.date} onChange={e=>setRevEditForm(f=>({...f,date:e.target.value}))} style={{...inputStyle,width:180,colorScheme:"dark"}} />
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:14}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:12,marginBottom:14}}>
               <div><div style={{fontSize:10,color:"#555",letterSpacing:1,marginBottom:5}}>信用卡應收</div><input type="number" value={revEditForm.ccExpected} onChange={e=>setRevEditForm(f=>({...f,ccExpected:e.target.value}))} style={inputStyle} /></div>
               <div><div style={{fontSize:10,color:"#555",letterSpacing:1,marginBottom:5}}>信用卡實收</div><input type="number" value={revEditForm.ccActual} onChange={e=>setRevEditForm(f=>({...f,ccActual:e.target.value}))} style={inputStyle} /></div>
-              <div><div style={{fontSize:10,color:"#888",letterSpacing:1,marginBottom:5}}>信用卡差額</div><div style={{...inputStyle,background:"#111",border:"1.5px solid #1a1a1a",color:diffColor(Number(revEditForm.ccActual||0)-Number(revEditForm.ccExpected||0)),fontWeight:700}}>{revEditForm.ccActual&&revEditForm.ccExpected?fmtDiff(Number(revEditForm.ccActual)-Number(revEditForm.ccExpected)):"—"}</div></div>
+              <div><div style={{fontSize:10,color:"#60a5fa",letterSpacing:1,marginBottom:5}}>外送營收</div><input type="number" value={revEditForm.deliveryRevenue||""} onChange={e=>setRevEditForm(f=>({...f,deliveryRevenue:e.target.value}))} placeholder="0（可留空）" style={{...inputStyle,borderColor:"#1a3a5a"}} /></div>
+              <div><div style={{fontSize:10,color:"#888",letterSpacing:1,marginBottom:5}}>信用卡差額</div><div style={{...inputStyle,background:"#111",border:"1.5px solid #1a1a1a",color:diffColor((Number(revEditForm.ccActual||0)+Number(revEditForm.deliveryRevenue||0))-Number(revEditForm.ccExpected||0)),fontWeight:700}}>{(revEditForm.ccActual||revEditForm.deliveryRevenue)&&revEditForm.ccExpected?fmtDiff((Number(revEditForm.ccActual||0)+Number(revEditForm.deliveryRevenue||0))-Number(revEditForm.ccExpected||0)):"—"}</div></div>
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:14}}>
               <div><div style={{fontSize:10,color:"#555",letterSpacing:1,marginBottom:5}}>現金應收</div><input type="number" value={revEditForm.cashExpected} onChange={e=>setRevEditForm(f=>({...f,cashExpected:e.target.value}))} style={inputStyle} /></div>
@@ -631,8 +642,8 @@ export default function App() {
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:14,padding:"12px 14px",background:"#111",borderRadius:6,border:"1px solid #1e1e1e"}}>
               <div><div style={{fontSize:10,color:"#888",marginBottom:4}}>當日應收營收</div><div style={{fontSize:16,fontWeight:700,color:"#888"}}>{(revEditForm.ccExpected&&revEditForm.cashExpected)?fmt(Number(revEditForm.ccExpected)+Number(revEditForm.cashExpected)):"—"}</div></div>
-              <div><div style={{fontSize:10,color:"#888",marginBottom:4}}>當日實際營收</div><div style={{fontSize:16,fontWeight:700,color:"#f5c542"}}>{(revEditForm.ccActual&&revEditForm.cashActual)?fmt(Number(revEditForm.ccActual)+Number(revEditForm.cashActual)):"—"}</div></div>
-              <div><div style={{fontSize:10,color:"#888",marginBottom:4}}>當日差額</div><div style={{fontSize:16,fontWeight:700,color:diffColor((Number(revEditForm.ccActual||0)-Number(revEditForm.ccExpected||0))+(Number(revEditForm.cashActual||0)-Number(revEditForm.cashExpected||0)))}}>{(revEditForm.ccActual&&revEditForm.ccExpected&&revEditForm.cashActual&&revEditForm.cashExpected)?fmtDiff((Number(revEditForm.ccActual)-Number(revEditForm.ccExpected))+(Number(revEditForm.cashActual)-Number(revEditForm.cashExpected))):"—"}</div></div>
+              <div><div style={{fontSize:10,color:"#888",marginBottom:4}}>當日實際營收</div><div style={{fontSize:16,fontWeight:700,color:"#f5c542"}}>{(revEditForm.ccActual&&revEditForm.cashActual)?fmt(Number(revEditForm.ccActual)+Number(revEditForm.deliveryRevenue||0)+Number(revEditForm.cashActual)):"—"}</div></div>
+              <div><div style={{fontSize:10,color:"#888",marginBottom:4}}>當日差額</div><div style={{fontSize:16,fontWeight:700,color:diffColor(((Number(revEditForm.ccActual||0)+Number(revEditForm.deliveryRevenue||0))-Number(revEditForm.ccExpected||0))+(Number(revEditForm.cashActual||0)-Number(revEditForm.cashExpected||0)))}}>{(revEditForm.ccActual&&revEditForm.ccExpected&&revEditForm.cashActual&&revEditForm.cashExpected)?fmtDiff(((Number(revEditForm.ccActual||0)+Number(revEditForm.deliveryRevenue||0))-Number(revEditForm.ccExpected||0))+(Number(revEditForm.cashActual||0)-Number(revEditForm.cashExpected||0))):"—"}</div></div>
             </div>
 
             {/* Vendor Balance edit */}
