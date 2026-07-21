@@ -56,6 +56,10 @@ export default function App() {
   const [filterVendor, setFilterVendor] = useState("全部");
   const [filterDate, setFilterDate] = useState("");
   const [syncStatus, setSyncStatus] = useState("");
+  const [pageSize, setPageSize] = useState(20);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [revPageSize, setRevPageSize] = useState(20);
+  const [revCurrentPage, setRevCurrentPage] = useState(1);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authRecord, setAuthRecord] = useState(null);
   const [authName, setAuthName] = useState("");
@@ -112,10 +116,15 @@ export default function App() {
   const withBal = withBalance(sorted);
   const filtered = withBal.filter(r => (filterVendor==="全部"||r.vendor===filterVendor) && (!filterDate||r.date===filterDate));
   const currentBalance = withBal.length>0 ? withBal[withBal.length-1].balance : 0;
-  const thisMonth = today().slice(0,7); // YYYY-MM
+  const thisMonth = today().slice(0,7);
   const monthRecords = records.filter(r=>r.date.slice(0,7)===thisMonth);
   const totalOut = monthRecords.filter(r=>r.type==="out").reduce((a,r)=>a+r.amount,0);
   const totalIn = monthRecords.filter(r=>r.type==="in").reduce((a,r)=>a+r.amount,0);
+
+  // Ledger pagination
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const pagedRecords = filtered.slice((safePage-1)*pageSize, safePage*pageSize);
 
   // ── Revenue computed ──
   const calcRev = (r) => {
@@ -129,6 +138,11 @@ export default function App() {
   };
   const sortedRevs = [...revenues].sort((a,b)=>new Date(b.date)-new Date(a.date));
   const filteredRevs = sortedRevs.filter(r => !revFilterDate || r.date===revFilterDate);
+
+  // Revenue pagination
+  const revTotalPages = Math.max(1, Math.ceil(filteredRevs.length / revPageSize));
+  const revSafePage = Math.min(revCurrentPage, revTotalPages);
+  const pagedRevs = filteredRevs.slice((revSafePage-1)*revPageSize, revSafePage*revPageSize);
 
   // ── Ledger actions ──
   const clickEdit = (rec) => { setAuthRecord(rec); setAuthName(""); setAuthReason(""); setAuthError(""); setShowAuthModal(true); };
@@ -296,8 +310,16 @@ export default function App() {
             {VENDORS.map(v=><option key={v} value={v}>{v}</option>)}
           </select>
           <input type="date" value={filterDate} onChange={e=>setFilterDate(e.target.value)} style={{...inputStyle,width:"auto",colorScheme:"dark"}} />
-          {(filterVendor!=="全部"||filterDate)&&<button onClick={()=>{setFilterVendor("全部");setFilterDate("");}} style={{background:"transparent",border:"1px solid #333",color:"#888",padding:"6px 12px",borderRadius:4,fontSize:11}}>清除篩選</button>}
-          <div style={{marginLeft:"auto",fontSize:11,color:"#555"}}>顯示 {filtered.length} / {records.length} 筆</div>
+          {(filterVendor!=="全部"||filterDate)&&<button onClick={()=>{setFilterVendor("全部");setFilterDate("");setCurrentPage(1);}} style={{background:"transparent",border:"1px solid #333",color:"#888",padding:"6px 12px",borderRadius:4,fontSize:11}}>清除篩選</button>}
+          <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:10}}>
+            <div style={{fontSize:11,color:"#555"}}>每頁</div>
+            <select value={pageSize} onChange={e=>{setPageSize(Number(e.target.value));setCurrentPage(1);}} style={{...inputStyle,width:"auto",fontSize:11,padding:"4px 8px"}}>
+              <option value={20}>20 筆</option>
+              <option value={50}>50 筆</option>
+              <option value={100}>100 筆</option>
+            </select>
+            <div style={{fontSize:11,color:"#555"}}>共 {filtered.length} 筆</div>
+          </div>
         </div>
         <div style={{padding:"0 28px 40px",overflowX:"auto"}}>
           <table style={{width:"100%",borderCollapse:"collapse",marginTop:8}}>
@@ -308,7 +330,7 @@ export default function App() {
             </tr></thead>
             <tbody>
               {filtered.length===0&&<tr><td colSpan={8} style={{padding:"40px",textAlign:"center",color:"#333",fontSize:13}}>尚無記錄</td></tr>}
-              {filtered.map(r=>(
+              {pagedRecords.map(r=>(
                 <tr key={r.id} style={{borderBottom:"1px solid #181818"}}>
                   <td style={{padding:"10px 12px",fontSize:13,color:"#888",whiteSpace:"nowrap"}}>{r.date}</td>
                   <td style={{padding:"10px 12px",fontSize:13,fontWeight:600,whiteSpace:"nowrap"}}>{r.vendor}</td>
@@ -327,6 +349,21 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {totalPages > 1 && (
+            <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,paddingTop:16,paddingBottom:8}}>
+              <button onClick={()=>setCurrentPage(1)} disabled={safePage===1} style={{background:"transparent",border:"1px solid #333",color:safePage===1?"#333":"#888",padding:"5px 10px",borderRadius:4,fontSize:11}}>«</button>
+              <button onClick={()=>setCurrentPage(p=>Math.max(1,p-1))} disabled={safePage===1} style={{background:"transparent",border:"1px solid #333",color:safePage===1?"#333":"#888",padding:"5px 10px",borderRadius:4,fontSize:11}}>‹</button>
+              {Array.from({length:totalPages},(_,i)=>i+1).filter(p=>Math.abs(p-safePage)<=2||p===1||p===totalPages).reduce((acc,p,i,arr)=>{
+                if(i>0&&arr[i-1]!==p-1) acc.push("...");
+                acc.push(p); return acc;
+              },[]).map((p,i)=> p==="..." ? <span key={i} style={{color:"#555",fontSize:11}}>…</span> :
+                <button key={p} onClick={()=>setCurrentPage(p)} style={{background:safePage===p?"#3dff7e":"transparent",border:`1px solid ${safePage===p?"#3dff7e":"#333"}`,color:safePage===p?"#0f0f0f":"#888",padding:"5px 10px",borderRadius:4,fontSize:11,fontWeight:safePage===p?700:400,minWidth:32}}>{p}</button>
+              )}
+              <button onClick={()=>setCurrentPage(p=>Math.min(totalPages,p+1))} disabled={safePage===totalPages} style={{background:"transparent",border:"1px solid #333",color:safePage===totalPages?"#333":"#888",padding:"5px 10px",borderRadius:4,fontSize:11}}>›</button>
+              <button onClick={()=>setCurrentPage(totalPages)} disabled={safePage===totalPages} style={{background:"transparent",border:"1px solid #333",color:safePage===totalPages?"#333":"#888",padding:"5px 10px",borderRadius:4,fontSize:11}}>»</button>
+              <span style={{fontSize:11,color:"#555",marginLeft:4}}>第 {safePage} / {totalPages} 頁</span>
+            </div>
+          )}
         </div>
       </>}
 
@@ -354,8 +391,16 @@ export default function App() {
         <div style={{padding:"12px 28px",display:"flex",gap:10,alignItems:"center",borderBottom:"1px solid #1a1a1a"}}>
           <div style={{fontSize:11,color:"#555",marginRight:4}}>篩選日期：</div>
           <input type="date" value={revFilterDate} onChange={e=>setRevFilterDate(e.target.value)} style={{...inputStyle,width:"auto",colorScheme:"dark"}} />
-          {revFilterDate&&<button onClick={()=>setRevFilterDate("")} style={{background:"transparent",border:"1px solid #333",color:"#888",padding:"6px 12px",borderRadius:4,fontSize:11}}>清除</button>}
-          <div style={{marginLeft:"auto",fontSize:11,color:"#555"}}>顯示 {filteredRevs.length} / {revenues.length} 筆</div>
+          {revFilterDate&&<button onClick={()=>{setRevFilterDate("");setRevCurrentPage(1);}} style={{background:"transparent",border:"1px solid #333",color:"#888",padding:"6px 12px",borderRadius:4,fontSize:11}}>清除</button>}
+          <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:10}}>
+            <div style={{fontSize:11,color:"#555"}}>每頁</div>
+            <select value={revPageSize} onChange={e=>{setRevPageSize(Number(e.target.value));setRevCurrentPage(1);}} style={{...inputStyle,width:"auto",fontSize:11,padding:"4px 8px"}}>
+              <option value={20}>20 筆</option>
+              <option value={50}>50 筆</option>
+              <option value={100}>100 筆</option>
+            </select>
+            <div style={{fontSize:11,color:"#555"}}>共 {filteredRevs.length} 筆</div>
+          </div>
         </div>
 
         {/* Revenue table */}
@@ -368,7 +413,7 @@ export default function App() {
             </tr></thead>
             <tbody>
               {filteredRevs.length===0&&<tr><td colSpan={15} style={{padding:"40px",textAlign:"center",color:"#333",fontSize:13}}>尚無記錄</td></tr>}
-              {filteredRevs.map(r=>{
+              {pagedRevs.map(r=>{
                 const c = calcRev(r);
                 return (
                   <tr key={r.id} style={{borderBottom:"1px solid #181818"}}>
@@ -398,6 +443,21 @@ export default function App() {
               })}
             </tbody>
           </table>
+          {revTotalPages > 1 && (
+            <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,paddingTop:16,paddingBottom:8}}>
+              <button onClick={()=>setRevCurrentPage(1)} disabled={revSafePage===1} style={{background:"transparent",border:"1px solid #333",color:revSafePage===1?"#333":"#888",padding:"5px 10px",borderRadius:4,fontSize:11}}>«</button>
+              <button onClick={()=>setRevCurrentPage(p=>Math.max(1,p-1))} disabled={revSafePage===1} style={{background:"transparent",border:"1px solid #333",color:revSafePage===1?"#333":"#888",padding:"5px 10px",borderRadius:4,fontSize:11}}>‹</button>
+              {Array.from({length:revTotalPages},(_,i)=>i+1).filter(p=>Math.abs(p-revSafePage)<=2||p===1||p===revTotalPages).reduce((acc,p,i,arr)=>{
+                if(i>0&&arr[i-1]!==p-1) acc.push("...");
+                acc.push(p); return acc;
+              },[]).map((p,i)=> p==="..." ? <span key={i} style={{color:"#555",fontSize:11}}>…</span> :
+                <button key={p} onClick={()=>setRevCurrentPage(p)} style={{background:revSafePage===p?"#f5c542":"transparent",border:`1px solid ${revSafePage===p?"#f5c542":"#333"}`,color:revSafePage===p?"#0f0f0f":"#888",padding:"5px 10px",borderRadius:4,fontSize:11,fontWeight:revSafePage===p?700:400,minWidth:32}}>{p}</button>
+              )}
+              <button onClick={()=>setRevCurrentPage(p=>Math.min(revTotalPages,p+1))} disabled={revSafePage===revTotalPages} style={{background:"transparent",border:"1px solid #333",color:revSafePage===revTotalPages?"#333":"#888",padding:"5px 10px",borderRadius:4,fontSize:11}}>›</button>
+              <button onClick={()=>setRevCurrentPage(revTotalPages)} disabled={revSafePage===revTotalPages} style={{background:"transparent",border:"1px solid #333",color:revSafePage===revTotalPages?"#333":"#888",padding:"5px 10px",borderRadius:4,fontSize:11}}>»</button>
+              <span style={{fontSize:11,color:"#555",marginLeft:4}}>第 {revSafePage} / {revTotalPages} 頁</span>
+            </div>
+          )}
         </div>
       </>}
 
