@@ -114,7 +114,7 @@ export default function App() {
   const withBalance = (recs) => { let b=0; return recs.map(r=>{ b += r.type==="in"?r.amount:-r.amount; return {...r,balance:b}; }); };
   const sorted = [...records].sort((a,b)=>new Date(a.date)-new Date(b.date)||a.id-b.id);
   const withBal = withBalance(sorted);
-  const filtered = withBal.filter(r => (filterVendor==="全部"||r.vendor===filterVendor) && (!filterDate||r.date===filterDate));
+  const filtered = [...withBal.filter(r => (filterVendor==="全部"||r.vendor===filterVendor) && (!filterDate||r.date===filterDate))].reverse();
   const currentBalance = withBal.length>0 ? withBal[withBal.length-1].balance : 0;
   const thisMonth = today().slice(0,7);
   const monthRecords = records.filter(r=>r.date.slice(0,7)===thisMonth);
