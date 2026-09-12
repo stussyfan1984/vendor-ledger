@@ -241,6 +241,29 @@ export default function App() {
     const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"}); const url=URL.createObjectURL(blob);
     const a=document.createElement("a"); a.href=url; a.download=`revenue-${today()}.csv`; a.click(); URL.revokeObjectURL(url);
   };
+  const [resyncing, setResyncing] = useState(false);
+  const [resyncProgress, setResyncProgress] = useState("");
+
+  const resyncAll = async () => {
+    if (!confirm(`確定要重新同步全部 ${records.length} 筆記錄到 Google Sheets？\n這可能需要幾分鐘，請勿關閉視窗。`)) return;
+    setResyncing(true);
+    let success = 0;
+    let fail = 0;
+    for (let i = 0; i < records.length; i++) {
+      setResyncProgress(`同步中 ${i+1} / ${records.length}...`);
+      try {
+        const params = new URLSearchParams({ action:"write_ledger", data:JSON.stringify(records[i]) });
+        await fetch(`${SCRIPT_URL}?${params.toString()}`, { mode:"no-cors" });
+        success++;
+      } catch(_) { fail++; }
+      // Small delay to avoid overwhelming the Script
+      if (i % 10 === 9) await new Promise(r => setTimeout(r, 500));
+    }
+    setResyncing(false);
+    setResyncProgress("");
+    alert(`同步完成！成功 ${success} 筆${fail>0?`，失敗 ${fail} 筆`:""}。\n請去 Sheets 確認資料，並執行 recalcBalance 補回 H 欄。`);
+  };
+
   const exportCSV = () => {
     const rows=[["日期","廠商","內容","類型","金額","收據/發票","剩餘貨款"]];
     withBal.forEach(r=>rows.push([r.date,r.vendor,r.content,r.type==="in"?"收入":"支出",r.type==="in"?r.amount:-r.amount,r.receipt?"✓":"",r.balance]));
@@ -275,6 +298,9 @@ export default function App() {
         <div style={{display:"flex",gap:10}}>
           {mainTab==="ledger" && <>
             <button onClick={exportCSV} style={{background:"transparent",border:"1.5px solid #333",color:"#666",padding:"7px 14px",borderRadius:4,fontSize:12}}>匯出 CSV</button>
+            <button onClick={resyncAll} disabled={resyncing} style={{background:"transparent",border:"1.5px solid #f5c542",color:"#f5c542",padding:"7px 14px",borderRadius:4,fontSize:12,opacity:resyncing?0.6:1}}>
+              {resyncing ? resyncProgress : "⟳ 補同步"}
+            </button>
             <button onClick={()=>{setAddForm({date:today(),vendor:"鼎耀",content:"",type:"out",amount:"",receipt:false});setShowAddForm(true);setTimeout(()=>addAmountRef.current?.focus(),100);}} style={{background:"#3dff7e",border:"none",color:"#0f0f0f",padding:"8px 20px",borderRadius:4,fontSize:13,fontWeight:700}}>+ 新增記錄</button>
           </>}
           {mainTab==="revenue" && <>
