@@ -12,6 +12,7 @@ import secrets
 import sqlite3
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
@@ -235,9 +236,18 @@ class Ledger:
         if not config.get('backupToken') or not config.get('scriptUrl', '').startswith('https://script.google.com/macros/s/'):
             raise ValueError('雲端備份尚未設定；本機記錄已保存')
         body = {'action': action, 'token': config['backupToken'], 'sourceId': self.get('source_id'), **fields}
-        request = urllib.request.Request(config['scriptUrl'], data=encoded(body).encode('utf-8'), headers={'Content-Type': 'application/json'})
-        with urllib.request.urlopen(request, timeout=60) as response:
-            result = json.load(response)
+        # ContentService redirects use one-time URLs. Never reuse a cached redirect.
+        # All operations are read-only or use an immutable, idempotent backup ID.
+        for attempt in range(2):
+            url = config['scriptUrl'] + '?requestNonce=' + secrets.token_hex(16)
+            request = urllib.request.Request(url, data=encoded(body).encode('utf-8'), headers={'Content-Type': 'application/json', 'User-Agent': 'RazzleLedger/1.0', 'Cache-Control': 'no-cache'})
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    result = json.load(response)
+                break
+            except (urllib.error.URLError, TimeoutError):
+                if attempt: raise
+                time.sleep(2)
         if result.get('status') != 'ok':
             raise ValueError(result.get('message', '雲端未確認備份'))
         return result
