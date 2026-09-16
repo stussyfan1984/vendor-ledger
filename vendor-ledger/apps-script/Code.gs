@@ -1,6 +1,9 @@
 const SHEET_ID = SpreadsheetApp.getActiveSpreadsheet().getId();
 
 function doGet(e) {
+  if (PropertiesService.getScriptProperties().getProperty('LOCAL_PRIMARY_ACTIVE') === 'true' && /^write_/.test(e.parameter.action || '')) {
+    return ContentService.createTextOutput(JSON.stringify({status:'error',message:'帳本已改為本機保存，請開啟 Mac 的本機帳本；此舊版不再接受記帳。'})).setMimeType(ContentService.MimeType.JSON);
+  }
   console.log(JSON.stringify({version:"rescue-20260914-2",action:e.parameter.action || "",parameterKeys:Object.keys(e.parameter)}));
   if (e.parameter.action === "health") {
     const ss = SpreadsheetApp.openById(SHEET_ID);
