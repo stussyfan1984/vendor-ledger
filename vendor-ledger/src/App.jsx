@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
-import { readRecords, preserveSnapshot, mergeRemote, upsertLocal, acknowledge, csvText } from "./ledgerStorage.mjs";
+import { csvText } from "./ledgerStorage.mjs";
+import { localApi, saveRecord, recordKind } from "./localClient";
+import BackupPanel from "./BackupPanel";
 
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbywpj522GgduRbcprGQ0mHNTVkEmQi_uoCaBgXUS5GlvGHQsGHLHLTNTET-WojzcYEhOw/exec";
 const STORAGE_KEY = "vendor_ledger_records";
 const REVENUE_KEY = "revenue_records";
 
@@ -12,54 +13,7 @@ const fmtDiff = (n) => { const s = fmt(Math.abs(n)); return n >= 0 ? `+${s}` : `
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
 const fmtDatetime = (iso) => { try { const d = new Date(iso); return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; } catch(_){ return iso; } };
 
-// A resolved opaque request is not evidence that Sheets stored the record.
-const api = async (action, data) => {
-  const params = new URLSearchParams({ action, requestTime: String(Date.now()) });
-  if (data) params.set("data", JSON.stringify(data));
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 45000);
-  try {
-    const response = await fetch(`${SCRIPT_URL}?${params}`, { signal: controller.signal, cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const result = await response.json();
-    if (result.status === "error" || result.error) throw new Error(result.message || result.error);
-    return result;
-  } finally { clearTimeout(timeout); }
-};
-const syncWrite = async (action, record, key) => {
-  try {
-    const result = await api(action, record);
-    if (result.status !== "ok") return false;
-    if (action === "write_ledger" && String(result.id) !== String(record.id)) return false;
-    if (action === "write_revenue") {
-      const readback = await api("read_revenue");
-      const saved = readback.records?.find(r => String(r.id) === String(record.id));
-      const fields = ["date","ccExpected","ccActual","deliveryRevenue","cashExpected","cashActual","expectedVendorBalance","actualVendorBalance","vendorBalanceMatch","note"];
-      if (!saved || fields.some(field => saved[field] !== record[field])) return false;
-    }
-    if (key) acknowledge(localStorage, key, record);
-    return true;
-  } catch (_) { return false; }
-};
-const syncRecord = record => syncWrite("write_ledger", record, STORAGE_KEY);
-const syncEditLog = log => syncWrite("write_edit_log", log);
-const syncRevenue = record => syncWrite("write_revenue", record, REVENUE_KEY);
-const syncRevenueEditLog = log => syncWrite("write_revenue_edit_log", log);
-const loadRecords = async action => {
-  try {
-    const result = await api(action);
-    return Array.isArray(result.records) && result.records.every(r => r && r.id != null) ? result.records : null;
-  } catch (_) { return null; }
-};
-const loadFromSheet = () => loadRecords("read_ledger");
-const loadRevenueFromSheet = () => loadRecords("read_revenue");
-const persistRecord = (key, record) => {
-  try { return upsertLocal(localStorage, key, record); }
-  catch (_) { alert("本機儲存失敗，記錄尚未送出。請先匯出備份並保留此分頁。"); return null; }
-};
-const ledgerLabel = r => `${r.date} | ${r.vendor} | ${r.content} | ${r.type === "in" ? "收入" : "支出"} ${r.amount} | 收據 ${r.receipt ? "有" : "無"}`;
 
-const revLabel = (r) => `${r.date} | 信用卡應收${r.ccExpected} 實收${r.ccActual} | 現金應收${r.cashExpected} 實收${r.cashActual}`;
 
 const inputStyle = { background:"#1a1a1a", border:"1.5px solid #2a2a2a", color:"#e8e8e8", fontFamily:"'Courier New', monospace", borderRadius:4, padding:"7px 10px", fontSize:13, outline:"none", width:"100%" };
 
@@ -74,6 +28,29 @@ const emptyRevForm = (vendorBalance = 0) => ({
 });
 
 export default function App() {
+  if (window.location.hostname !== "127.0.0.1") return <div style={{background:"#101713",color:"#eee",minHeight:"100vh",padding:"60px 10%",fontFamily:"sans-serif",lineHeight:1.9}}>
+    <h1>貨款帳本已改為本機保存</h1>
+    <p>請在店內 Mac mini 開啟本機帳本。記錄會先儲存在這台 Mac，再自動備份到雲端。</p>
+    <a href="http://127.0.0.1:8769/" style={{color:"#3dff7e",fontSize:22}}>開啟這台 Mac 的帳本 →</a>
+    <p>此雲端網址不再提供新增或修改。若本機頁面無法開啟，請檢查帳本背景服務。</p>
+  </div>;
+  return <LocalApp />;
+}
+
+function LocalApp() {
+  const [backupStatus, setBackupStatus] = useState({});
+  const [loadError, setLoadError] = useState("");
+  const saveBusy = useRef(false);
+  const lastApplied = useRef(-1);
+  const ledgerDraft = useRef(null), revenueDraft = useRef(null);
+  const applyState = state => {if(state.status.revision<lastApplied.current)return;lastApplied.current=state.status.revision;setRecords(state.ledger);setRevenues(state.revenue);setBackupStatus(state.status);setLoaded(true);setRevLoaded(true);setLoadError("");};
+  const persistRecord = async (key, record, audit) => {
+    if(saveBusy.current) return null;
+    saveBusy.current = true;
+    try {const state=await saveRecord(key,record,audit);applyState(state);return state[recordKind(key)];}
+    catch(e){alert(e.message);return null;}
+    finally {saveBusy.current=false;}
+  };
   const [mainTab, setMainTab] = useState("ledger"); // ledger | revenue
 
   // ── Ledger state ──
@@ -81,7 +58,6 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [filterVendor, setFilterVendor] = useState("全部");
   const [filterDate, setFilterDate] = useState("");
-  const [syncStatus, setSyncStatus] = useState("");
   const [pageSize, setPageSize] = useState(20);
   const [currentPage, setCurrentPage] = useState(1);
   const [revPageSize, setRevPageSize] = useState(20);
@@ -103,7 +79,6 @@ export default function App() {
   // ── Revenue state ──
   const [revenues, setRevenues] = useState([]);
   const [revLoaded, setRevLoaded] = useState(false);
-  const [revSyncStatus, setRevSyncStatus] = useState("");
   const [showRevAdd, setShowRevAdd] = useState(false);
   const [revForm, setRevForm] = useState(emptyRevForm());
   const [showRevAuth, setShowRevAuth] = useState(false);
@@ -117,33 +92,16 @@ export default function App() {
   const [revEditForm, setRevEditForm] = useState(emptyRevForm());
   const [revFilterDate, setRevFilterDate] = useState("");
 
-  // Merge against the latest local copy after the request completes.
+  // The local service is the sole authority. Network backups never replace records.
   useEffect(() => {
     let cancelled = false;
-    const load = async (key, loader, setRows, setReady, setStatus) => {
-      try {
-        preserveSnapshot(localStorage, key);
-        const remote = await loader();
-        if (cancelled) return;
-        const local = readRecords(localStorage, key);
-        const merged = remote === null ? local : mergeRemote(remote, local);
-        localStorage.setItem(key, JSON.stringify(merged));
-        setRows(merged);
-        if (remote === null || merged.some(r => r._pending)) setStatus("fail");
-      } catch (err) {
-        if (!cancelled) { setStatus("fail"); alert(err.message || "本機儲存失敗，請先匯出備份。"); }
-      } finally { if (!cancelled) setReady(true); }
+    const refresh = async () => {
+      try { const state = await localApi('state'); if (!cancelled) applyState(state); }
+      catch (e) { if (!cancelled) setLoadError(e.message); }
     };
-    load(STORAGE_KEY, loadFromSheet, setRecords, setLoaded, setSyncStatus);
-    load(REVENUE_KEY, loadRevenueFromSheet, setRevenues, setRevLoaded, setRevSyncStatus);
-    const onStorage = event => {
-      try {
-        if (event.key === STORAGE_KEY) setRecords(readRecords(localStorage, STORAGE_KEY));
-        if (event.key === REVENUE_KEY) setRevenues(readRecords(localStorage, REVENUE_KEY));
-      } catch (_) { /* Retain the current view if another tab stores invalid data. */ }
-    };
-    window.addEventListener("storage", onStorage);
-    return () => { cancelled = true; window.removeEventListener("storage", onStorage); };
+    refresh();
+    const timer=setInterval(refresh,5000);
+    return ()=>{cancelled=true;clearInterval(timer);};
   }, []);
 
   // ── Ledger computed ──
@@ -194,34 +152,27 @@ export default function App() {
   const submitEdit = async () => {
     const amt = parseInt(form.amount.replace(/[^0-9]/g,""),10);
     if (!amt||isNaN(amt)||!form.content.trim()) return;
-    const original = records.find(r=>r.id===editId);
+    const original = authRecord;
     const updated_rec = {...original, date:form.date, vendor:form.vendor, content:form.content.trim(), type:form.type, amount:amt, receipt:form.receipt};
-    const updated = persistRecord(STORAGE_KEY, updated_rec);
+    const updated = await persistRecord(STORAGE_KEY, updated_rec, {name:editAuth.name,reason:editAuth.reason});
     if (!updated) return;
-    setRecords(updated); setShowEditForm(false);
-    setSyncStatus("syncing");
-    const recordOk = await syncRecord(updated_rec);
-    const logOk = await syncEditLog({ id:Date.now(), time:new Date().toISOString(), editor:editAuth.name, reason:editAuth.reason, original:ledgerLabel(original), updated:ledgerLabel(updated_rec) });
-    setRecords(readRecords(localStorage, STORAGE_KEY));
-    setSyncStatus(recordOk && logOk ? "ok" : "fail");
+    setShowEditForm(false);
     setEditAuth(null); setEditId(null);
   };
   const submitAdd = async () => {
     const amt = parseInt(addForm.amount.replace(/[^0-9]/g,""),10);
     if (!amt||isNaN(amt)||!addForm.content.trim()) return;
-    const rec = { id:Date.now(), date:addForm.date, vendor:addForm.vendor, content:addForm.content.trim(), type:addForm.type, amount:amt, receipt:addForm.receipt, time:new Date().toISOString() };
-    const updated = persistRecord(STORAGE_KEY, rec);
+    ledgerDraft.current ||= {id:Date.now(),time:new Date().toISOString()};
+    const rec = { ...ledgerDraft.current, date:addForm.date, vendor:addForm.vendor, content:addForm.content.trim(), type:addForm.type, amount:amt, receipt:addForm.receipt };
+    const updated = await persistRecord(STORAGE_KEY, rec);
     if (!updated) return;
-    setRecords(updated);
+    ledgerDraft.current=null;
     setShowAddForm(false); setAddForm({ date:today(), vendor:"鼎耀", content:"", type:"out", amount:"", receipt:false });
-    setSyncStatus("syncing");
-    const ok = await syncRecord(rec);
-    setRecords(readRecords(localStorage, STORAGE_KEY));
-    setSyncStatus(ok?"ok":"fail");
   };
-  const deleteRecord = (id) => {
-    if (!confirm("確定刪除這筆記錄？")) return;
-    const updated = readRecords(localStorage, STORAGE_KEY).filter(r=>r.id!==id); localStorage.setItem(STORAGE_KEY, JSON.stringify(updated)); setRecords(updated);
+  const deleteRecord = async (id) => {
+    if (!confirm("確定刪除這筆記錄？完整備份仍會保留舊版本。")) return;
+    try {applyState(await localApi('delete',{kind:'ledger',id,expectedRevision:records.find(r=>r.id===id)._revision}));}
+    catch(e){alert(e.message);}
   };
 
   // ── Revenue actions ──
@@ -230,15 +181,12 @@ export default function App() {
     if (!date||!ccExpected||!ccActual||!cashExpected||!cashActual) return;
     if (revenues.find(r=>r.date===date)) { alert(`${date} 已有記錄，請使用編輯功能修改`); return; }
     const actualVB = vendorBalanceMatch ? expectedVendorBalance : Number(actualVendorBalance);
-    const rec = { id:Date.now(), date, ccExpected:Number(ccExpected), ccActual:Number(ccActual), deliveryRevenue:Number(deliveryRevenue||0), cashExpected:Number(cashExpected), cashActual:Number(cashActual), note:note||"", expectedVendorBalance:Number(expectedVendorBalance), vendorBalanceMatch, actualVendorBalance:actualVB, time:new Date().toISOString() };
-    const updated = persistRecord(REVENUE_KEY, rec);
+    revenueDraft.current ||= {id:Date.now(),time:new Date().toISOString()};
+    const rec = { ...revenueDraft.current, date, ccExpected:Number(ccExpected), ccActual:Number(ccActual), deliveryRevenue:Number(deliveryRevenue||0), cashExpected:Number(cashExpected), cashActual:Number(cashActual), note:note||"", expectedVendorBalance:Number(expectedVendorBalance), vendorBalanceMatch, actualVendorBalance:actualVB };
+    const updated = await persistRecord(REVENUE_KEY, rec);
     if (!updated) return;
-    setRevenues(updated);
+    revenueDraft.current=null;
     setShowRevAdd(false); setRevForm(emptyRevForm());
-    setRevSyncStatus("syncing");
-    const ok = await syncRevenue(rec);
-    setRevenues(readRecords(localStorage, REVENUE_KEY));
-    setRevSyncStatus(ok?"ok":"fail");
   };
   const clickRevEdit = (rec) => { setRevAuthRecord(rec); setRevAuthName(""); setRevAuthReason(""); setRevAuthError(""); setShowRevAuth(true); };
   const submitRevAuth = () => {
@@ -263,22 +211,18 @@ export default function App() {
   const submitRevEdit = async () => {
     const { date, ccExpected, ccActual, deliveryRevenue, cashExpected, cashActual, note, expectedVendorBalance, vendorBalanceMatch, actualVendorBalance } = revEditForm;
     if (!date||!ccExpected||!ccActual||!cashExpected||!cashActual) return;
-    const original = revenues.find(r=>r.id===revEditId);
+    const original = revAuthRecord;
     const actualVB = vendorBalanceMatch ? Number(expectedVendorBalance) : Number(actualVendorBalance);
     const updated_rec = { ...original, date, ccExpected:Number(ccExpected), ccActual:Number(ccActual), deliveryRevenue:Number(deliveryRevenue||0), cashExpected:Number(cashExpected), cashActual:Number(cashActual), note:note||"", expectedVendorBalance:Number(expectedVendorBalance), vendorBalanceMatch, actualVendorBalance:actualVB };
-    const updated = persistRecord(REVENUE_KEY, updated_rec);
+    const updated = await persistRecord(REVENUE_KEY, updated_rec, {name:revEditAuth.name,reason:revEditAuth.reason});
     if (!updated) return;
-    setRevenues(updated); setShowRevEdit(false);
-    setRevSyncStatus("syncing");
-    const recordOk = await syncRevenue(updated_rec);
-    const logOk = await syncRevenueEditLog({ id:Date.now(), time:new Date().toISOString(), editor:revEditAuth.name, reason:revEditAuth.reason, original:revLabel(original), updated:revLabel(updated_rec) });
-    setRevenues(readRecords(localStorage, REVENUE_KEY));
-    setRevSyncStatus(recordOk && logOk ? "ok" : "fail");
+    setShowRevEdit(false);
     setRevEditAuth(null); setRevEditId(null);
   };
-  const deleteRevenue = (id) => {
-    if (!confirm("確定刪除這筆記錄？")) return;
-    const updated = readRecords(localStorage, REVENUE_KEY).filter(r=>r.id!==id); localStorage.setItem(REVENUE_KEY, JSON.stringify(updated)); setRevenues(updated);
+  const deleteRevenue = async (id) => {
+    if (!confirm("確定刪除這筆記錄？完整備份仍會保留舊版本。")) return;
+    try {applyState(await localApi('delete',{kind:'revenue',id,expectedRevision:revenues.find(r=>r.id===id)._revision}));}
+    catch(e){alert(e.message);}
   };
   const exportRevCSV = () => {
     const rows = [["日期","信用卡應收","信用卡實收","外送營收","信用卡差額","現金應收","現金實收","現金差額","當日應收營收","當日實際營收","當日差額","應剩餘貨款","實際剩餘貨款","與貨款相符","備註","ID","時間"]];
@@ -287,29 +231,6 @@ export default function App() {
     const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"}); const url=URL.createObjectURL(blob);
     const a=document.createElement("a"); a.href=url; a.download=`revenue-${today()}.csv`; a.click(); URL.revokeObjectURL(url);
   };
-  const [resyncing, setResyncing] = useState(false);
-  const [resyncProgress, setResyncProgress] = useState("");
-
-  const resyncAll = async () => {
-    const remote = await loadFromSheet();
-    if (remote === null) { setSyncStatus("fail"); alert("無法讀取 Sheets，已停止補同步，請保留本機資料。"); return; }
-    const remoteIds = new Set(remote.map(r => String(r.id)));
-    const pending = readRecords(localStorage, STORAGE_KEY).filter(r => r._pending || !remoteIds.has(String(r.id)));
-    if (!pending.length) { alert("沒有待補送的貨款記錄。"); return; }
-    if (!confirm(`補送 ${pending.length} 筆尚未確認同步的記錄？`)) return;
-    setResyncing(true);
-    let success = 0;
-    try {
-      for (let i = 0; i < pending.length; i++) {
-        setResyncProgress(`同步中 ${i+1} / ${pending.length}...`);
-        if (await syncRecord(pending[i])) success++;
-      }
-      setRecords(readRecords(localStorage, STORAGE_KEY));
-      setSyncStatus(success === pending.length ? "ok" : "fail");
-      alert(`已確認同步 ${success} 筆，尚有 ${pending.length-success} 筆待補送。`);
-    } finally { setResyncing(false); setResyncProgress(""); }
-  };
-
   const exportCSV = () => {
     const rows=[["日期","廠商","內容","類型","金額","收據/發票","剩餘貨款","ID","時間"]];
     withBal.forEach(r=>rows.push([r.date,r.vendor,r.content,r.type==="in"?"收入":"支出",r.type==="in"?r.amount:-r.amount,r.receipt?"✓":"",r.balance,r.id,r.time]));
@@ -320,13 +241,10 @@ export default function App() {
 
   if (!loaded||!revLoaded) return (
     <div style={{background:"#0f0f0f",height:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:"#3dff7e",fontFamily:"monospace",fontSize:14}}>
-      ⟳ 從 Google Sheets 載入...
+      {loadError || "⟳ 從這台 Mac 載入帳本…"}
     </div>
   );
 
-  const displaySyncStatus = [syncStatus, revSyncStatus].includes("syncing") ? "syncing"
-    : [syncStatus, revSyncStatus].includes("fail") || records.some(r => r._pending) || revenues.some(r => r._pending) ? "fail"
-    : syncStatus || revSyncStatus;
   const diffColor = (n) => n > 0 ? "#3dff7e" : n < 0 ? "#ff6b6b" : "#888";
 
   return (
@@ -339,17 +257,12 @@ export default function App() {
           <div style={{fontSize:10,color:"#555",letterSpacing:3}}>RAZZLE DAZZLE</div>
           <div style={{fontSize:15,fontWeight:700,color:"#e8e8e8",letterSpacing:1}}>
             管理系統
-            {displaySyncStatus && <span style={{marginLeft:12,fontSize:11,color:displaySyncStatus==="syncing"?"#888":displaySyncStatus==="ok"?"#3dff7e":"#ff4444"}}>
-              {displaySyncStatus==="syncing"?"⟳ 同步中":displaySyncStatus==="ok"?"☁ 已同步":"⚠ 尚有同步未確認，請保留本機資料"}
-            </span>}
+
           </div>
         </div>
         <div style={{display:"flex",gap:10}}>
           {mainTab==="ledger" && <>
             <button onClick={exportCSV} style={{background:"transparent",border:"1.5px solid #333",color:"#666",padding:"7px 14px",borderRadius:4,fontSize:12}}>匯出 CSV</button>
-            <button onClick={resyncAll} disabled={resyncing} style={{background:"transparent",border:"1.5px solid #f5c542",color:"#f5c542",padding:"7px 14px",borderRadius:4,fontSize:12,opacity:resyncing?0.6:1}}>
-              {resyncing ? resyncProgress : "⟳ 補同步"}
-            </button>
             <button onClick={()=>{setAddForm({date:today(),vendor:"鼎耀",content:"",type:"out",amount:"",receipt:false});setShowAddForm(true);setTimeout(()=>addAmountRef.current?.focus(),100);}} style={{background:"#3dff7e",border:"none",color:"#0f0f0f",padding:"8px 20px",borderRadius:4,fontSize:13,fontWeight:700}}>+ 新增記錄</button>
           </>}
           {mainTab==="revenue" && <>
@@ -358,6 +271,10 @@ export default function App() {
           </>}
         </div>
       </div>
+
+      <BackupPanel status={backupStatus} onRestored={applyState} />
+      {loadError && <div role="alert" style={{padding:16,color:"#ff8a8a"}}>本機服務連線中斷：{loadError} 請保留目前畫面。</div>}
+      {!backupStatus.initialized && <div role="alert" style={{padding:24}}>本機帳本尚未完成移轉，請勿開始記帳。</div>}
 
       {/* ── Main Tabs ── */}
       <div style={{display:"flex",borderBottom:"2px solid #1a1a1a"}}>
